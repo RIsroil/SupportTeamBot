@@ -74,13 +74,6 @@ public class SupportTelegramBot extends TelegramLongPollingBot {
 
     @Override
     public void onUpdateReceived(Update update) {
-
-        // Get Group Id
-//        if (update.hasMessage()) {
-//            Message message = update.getMessage();
-//            Long chatId = message.getChatId();
-//            logger.info("Guruh chatId: {}", chatId);
-//        }
         if (update.hasMessage()) {
             Message message = update.getMessage();
             Long userChatId = message.getChatId();
@@ -93,8 +86,10 @@ public class SupportTelegramBot extends TelegramLongPollingBot {
             user.setLastName(message.getFrom().getLastName());
             userRepository.save(user);
 
-            ChatEntity chat = chatRepository.findTopByUserAndIsClosedFalseOrderByCreatedAtDesc(user)
+            // Find the most recent chat (open or closed) for the user
+            ChatEntity chat = chatRepository.findTopByUserOrderByCreatedAtDesc(user)
                     .orElseGet(() -> {
+                        // No chat exists, create a new one
                         ChatEntity newChat = ChatEntity.builder()
                                 .user(user)
                                 .createdAt(LocalDateTime.now())
@@ -104,6 +99,7 @@ public class SupportTelegramBot extends TelegramLongPollingBot {
                     });
 
             if (message.hasPhoto()) {
+                // Existing photo handling logic remains unchanged
                 List<PhotoSize> photos = message.getPhoto();
                 String fileId = photos.get(photos.size() - 1).getFileId();
 
@@ -128,8 +124,8 @@ public class SupportTelegramBot extends TelegramLongPollingBot {
                     MessageEntity messageEntity = MessageEntity.builder()
                             .chat(chat)
                             .sender("USER")
-                            .message(messageContent) // Matn yoki caption
-                            .file(downloadUrl) // Linkni saqlash
+                            .message(messageContent)
+                            .file(downloadUrl)
                             .createdAt(LocalDateTime.now())
                             .build();
                     messageRepository.save(messageEntity);
@@ -144,19 +140,19 @@ public class SupportTelegramBot extends TelegramLongPollingBot {
                 switch (text) {
                     case "/start":
                     case "start":
+                        // Check if the most recent chat is closed
                         if (chat.isClosed()) {
-                            chat = ChatEntity.builder()
-                                    .user(user)
-                                    .createdAt(LocalDateTime.now())
-                                    .isClosed(false)
-                                    .build();
+                            // Reopen the existing chat
+                            chat.setClosed(false);
+                            chat.setUpdatedAt(LocalDateTime.now());
                             chat = chatRepository.save(chat);
                         }
                         sendWelcomeMessage(userChatId);
                         return;
                     default:
-                        boolean shouldSendAutomatedResponse = shouldSendAutomatedResponseForChat(chat);
+                        boolean shouldSend = shouldSendAutomatedResponseForChat(chat);
 
+                        // Save user message
                         MessageEntity savedMessage = MessageEntity.builder()
                                 .chat(chat)
                                 .sender("USER")
@@ -164,6 +160,10 @@ public class SupportTelegramBot extends TelegramLongPollingBot {
                                 .createdAt(LocalDateTime.now())
                                 .build();
                         messageRepository.save(savedMessage);
+
+                        if (shouldSend) {
+                            sendReply(userChatId, "So'rovingiz qabul qilindi, tez orada javob beramiz.");
+                        }
 
                         messagingTemplate.convertAndSend("/topic/chats", savedMessage);
                 }
@@ -223,7 +223,7 @@ public class SupportTelegramBot extends TelegramLongPollingBot {
         sendReply(chatId, welcomeMessage);
     }
 
-    private void sendReply(Long chatId, String text) {
+    public void sendReply(Long chatId, String text) {
         SendMessage message = new SendMessage();
         message.setChatId(chatId.toString());
         message.setText(text);

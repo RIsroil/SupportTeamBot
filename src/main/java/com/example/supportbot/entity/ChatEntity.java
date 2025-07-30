@@ -27,7 +27,7 @@ public class ChatEntity {
     private boolean isClosed = false;
 
     @Column(name = "created_at")
-    private LocalDateTime createdAt = LocalDateTime.now();
+    private LocalDateTime createdAt ;
 
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
@@ -42,4 +42,5 @@ public class ChatEntity {
     public void preUpdate() {
         updatedAt = LocalDateTime.now();
     }
+
 }

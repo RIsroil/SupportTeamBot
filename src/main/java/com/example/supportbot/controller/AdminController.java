@@ -161,4 +161,35 @@ public class AdminController {
 
         return ResponseEntity.ok("Xabarlar o‘qilgan deb belgilandi");
     }
+
+    @PostMapping("/{chatId}/close")
+    public ResponseEntity<String> closeChat(@PathVariable UUID chatId) {
+        Optional<ChatEntity> optionalChat = chatRepository.findById(chatId);
+        if (optionalChat.isEmpty()) {
+            return ResponseEntity.badRequest().body("Chat topilmadi");
+        }
+
+        ChatEntity chat = optionalChat.get();
+        if (chat.isClosed()) {
+            return ResponseEntity.badRequest().body("Chat allaqachon yopilgan");
+        }
+
+        chat.setClosed(true);
+        chat.setUpdatedAt(LocalDateTime.now());
+        chatRepository.save(chat);
+
+        String thankYouMsg = """
+        Murojaatingiz uchun rahmat ✅
+        Agar qo‘shimcha savolingiz bo‘lsa, /start tugmasini bosing.
+        
+        Thank you for contacting support ✅
+        For further help, please click /start.
+
+        Спасибо за ваше обращение ✅
+        Для новых вопросов нажмите /start.
+        """;
+        telegramBot.sendReply(chat.getUser().getTelegramId(), thankYouMsg);
+
+        return ResponseEntity.ok("Chat yopildi va foydalanuvchiga habar yuborildi");
+    }
 }
