@@ -7,7 +7,6 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
-
 import java.util.Optional;
 import java.util.UUID;
 
@@ -20,13 +19,13 @@ public interface ChatRepository extends JpaRepository<ChatEntity, UUID> {
     @Query("SELECT c FROM ChatEntity c WHERE c.isClosed = false ORDER BY c.updatedAt DESC, c.createdAt DESC")
     Page<ChatEntity> findActiveChats(Pageable pageable);
 
-    @Query("SELECT c FROM ChatEntity c ORDER BY c.updatedAt DESC, c.createdAt DESC")
+    @Query("SELECT c FROM ChatEntity c where c.user.telegramId>0 order by c.updatedAt DESC, c.createdAt DESC")
     Page<ChatEntity> findAllChatsOrdered(Pageable pageable);
 
     @Query("SELECT c FROM ChatEntity c WHERE " +
-            "(c.user.username LIKE %:search% OR " +
+            "((c.user.username LIKE %:search% OR " +
             "c.user.firstName LIKE %:search% OR " +
-            "c.user.lastName LIKE %:search%) " +
+            "c.user.lastName LIKE %:search%)) AND c.user.telegramId>0 " +
             "ORDER BY c.updatedAt DESC, c.createdAt DESC")
     Page<ChatEntity> searchChats(@Param("search") String search, Pageable pageable);
 

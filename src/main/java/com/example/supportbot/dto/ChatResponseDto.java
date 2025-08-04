@@ -17,7 +17,6 @@ public class ChatResponseDto {
     private String lastMessage;
     private LocalDateTime lastMessageDate;
     private boolean isClosed;
-    private String language;
     private String lastMessageSender;
     private boolean hasFile;
 }

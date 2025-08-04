@@ -5,19 +5,17 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Data
-@Builder
-@NoArgsConstructor
 @AllArgsConstructor
-public class MessageResponseDto {
-    private UUID id;
-    private UUID chatId;
+@NoArgsConstructor
+@Builder
+public class MessageResponseDTO {
+    private UUID messageId;
     private String sender;
     private String message;
+    private String time;
     private String file;
-    private LocalDateTime createdAt;
-    private boolean isRead;
+    private Boolean read;
 }

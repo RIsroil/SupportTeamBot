@@ -7,8 +7,7 @@ import com.example.supportbot.entity.UserEntity;
 import com.example.supportbot.repository.ChatRepository;
 import com.example.supportbot.repository.MessageRepository;
 import com.example.supportbot.repository.UserRepository;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.log4j.Log4j2;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
@@ -20,22 +19,41 @@ import org.telegram.telegrambots.meta.api.objects.*;
 import org.telegram.telegrambots.meta.api.objects.commands.BotCommand;
 import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeDefault;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
-
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+
 @Component
+@Log4j2
 public class SupportTelegramBot extends TelegramLongPollingBot {
 
-    private static final Logger logger = LoggerFactory.getLogger(SupportTelegramBot.class);
     private final TelegramBotConfig config;
     private final UserRepository userRepository;
     private final ChatRepository chatRepository;
     private final MessageRepository messageRepository;
     private final SimpMessagingTemplate messagingTemplate;
+
+    public SupportTelegramBot(TelegramBotConfig config, UserRepository userRepository,
+                              ChatRepository chatRepository, MessageRepository messageRepository,
+                              SimpMessagingTemplate messagingTemplate) {
+        this.config = config;
+        this.userRepository = userRepository;
+        this.chatRepository = chatRepository;
+        this.messageRepository = messageRepository;
+        this.messagingTemplate = messagingTemplate;
+
+        List<BotCommand> commands = new ArrayList<>();
+        commands.add(new BotCommand("/start", "Botni ishga tushirish"));
+        try {
+            execute(new SetMyCommands(commands, new BotCommandScopeDefault(), null));
+            log.info("✅ Bot buyruqlari muvaffaqiyatli o'rnatildi");
+        } catch (TelegramApiException e) {
+            log.error("❌ Bot buyruqlarini o'rnatishda xato: {}", e.getMessage(), e);
+        }
+    }
 
     @Override
     public String getBotUsername() {
@@ -51,190 +69,223 @@ public class SupportTelegramBot extends TelegramLongPollingBot {
         return config.getToken();
     }
 
+    @Override
+    public void onUpdateReceived(Update update) {
+        if (!update.hasMessage()) {
+            return;
+        }
 
-    public SupportTelegramBot(TelegramBotConfig config, UserRepository userRepository,
-                              ChatRepository chatRepository, MessageRepository messageRepository,
-                              SimpMessagingTemplate messagingTemplate) {
-        this.config = config;
-        this.userRepository = userRepository;
-        this.chatRepository = chatRepository;
-        this.messageRepository = messageRepository;
-        this.messagingTemplate = messagingTemplate;
-
-        List<BotCommand> commands = new ArrayList<>();
-        commands.add(new BotCommand("/start", "Start the bot"));
+        Message message = update.getMessage();
+        Long userChatId = message.getChatId();
 
         try {
-            this.execute(new SetMyCommands(commands, new BotCommandScopeDefault(), null));
-            logger.info("Bot buyruqlari muvaffaqiyatli o‘rnatildi");
-        } catch (TelegramApiException e) {
-            logger.error("Bot buyruqlarini o‘rnatishda xato", e);
+            UserEntity user = getOrCreateUser(message);
+            ChatEntity chat = getOrReopenChat(user);
+
+            if (message.hasPhoto()) {
+                handlePhotoMessage(message, chat, userChatId);
+            } else if (message.hasText()) {
+                handleTextMessage(message, chat, userChatId);
+            }
+        } catch (Exception e) {
+            log.error("❌ Xabar qayta ishlashda xato, user {}: {}", userChatId, e.getMessage(), e);
+            sendReply(userChatId, "⚠️ Xatolik yuz berdi. Iltimos, qayta urinib ko'ring.");
         }
     }
 
-    @Override
-    public void onUpdateReceived(Update update) {
-        if (update.hasMessage()) {
-            Message message = update.getMessage();
-            Long userChatId = message.getChatId();
+    private UserEntity getOrCreateUser(Message message) {
+        Long userChatId = message.getChatId();
+        UserEntity user = userRepository.findByTelegramId(userChatId)
+                .orElseGet(() -> UserEntity.builder().telegramId(userChatId).build());
+        user.setUsername(message.getFrom().getUserName());
+        user.setFirstName(message.getFrom().getFirstName());
+        user.setLastName(message.getFrom().getLastName());
+        return userRepository.save(user);
+    }
 
-            // Save or update user
-            UserEntity user = userRepository.findByTelegramId(userChatId)
-                    .orElseGet(() -> UserEntity.builder().telegramId(userChatId).build());
-            user.setUsername(message.getFrom().getUserName());
-            user.setFirstName(message.getFrom().getFirstName());
-            user.setLastName(message.getFrom().getLastName());
-            userRepository.save(user);
+    private ChatEntity getOrReopenChat(UserEntity user) {
+        Optional<ChatEntity> lastChat = chatRepository.findTopByUserOrderByCreatedAtDesc(user);
+        if (lastChat.isPresent()) {
+            ChatEntity chat = lastChat.get();
+            if (chat.isClosed()) {
+                chat.setClosed(false);
+                chat.setUpdatedAt(LocalDateTime.now());
+                log.info("🔓 Chat qayta ochildi: {} for user: {}", chat.getId(), user.getTelegramId());
+            }
+            return chatRepository.save(chat);
+        }
+        ChatEntity newChat = ChatEntity.builder()
+                .user(user)
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
+                .isClosed(false)
+                .build();
+        log.info("🆕 Yangi chat yaratildi: {} for user: {}", newChat.getId(), user.getTelegramId());
+        return chatRepository.save(newChat);
+    }
 
-            // Find the most recent chat (open or closed) for the user
-            ChatEntity chat = chatRepository.findTopByUserOrderByCreatedAtDesc(user)
-                    .orElseGet(() -> {
-                        // No chat exists, create a new one
-                        ChatEntity newChat = ChatEntity.builder()
-                                .user(user)
-                                .createdAt(LocalDateTime.now())
-                                .isClosed(false)
-                                .build();
-                        return chatRepository.save(newChat);
-                    });
+    private void handlePhotoMessage(Message message, ChatEntity chat, Long userChatId) {
+        try {
+            List<PhotoSize> photos = message.getPhoto();
+            String fileId = photos.get(photos.size() - 1).getFileId();
 
-            if (message.hasPhoto()) {
-                // Existing photo handling logic remains unchanged
-                List<PhotoSize> photos = message.getPhoto();
-                String fileId = photos.get(photos.size() - 1).getFileId();
-
-                String groupChatId = getGroupId();
+            String groupChatId = getGroupId();
+            if (groupChatId != null && !groupChatId.trim().isEmpty()) {
                 SendPhoto sendPhoto = new SendPhoto();
                 sendPhoto.setChatId(groupChatId);
                 sendPhoto.setPhoto(new InputFile(fileId));
-                try {
-                    Message sentMessage = execute(sendPhoto);
-                    String sentFileId = sentMessage.getPhoto().get(0).getFileId();
-
-                    GetFile getFile = new GetFile();
-                    getFile.setFileId(sentFileId);
-                    File file = execute(getFile);
-                    String filePath = file.getFilePath();
-                    String downloadUrl = "https://api.telegram.org/file/bot" + getBotToken() + "/" + filePath;
-
-                    String caption = message.getCaption();
-                    String text = message.getText();
-                    String messageContent = caption != null ? caption : (text != null ? text : null);
-
-                    MessageEntity messageEntity = MessageEntity.builder()
-                            .chat(chat)
-                            .sender("USER")
-                            .message(messageContent)
-                            .file(downloadUrl)
-                            .createdAt(LocalDateTime.now())
-                            .build();
-                    messageRepository.save(messageEntity);
-
-                    sendReply(userChatId, "So'rovingiz qabul qilindi, tez orada javob beramiz.\nYour request has been received, we will respond soon.\nВаш запрос получен, мы ответим вам в ближайшее время.");
-                } catch (TelegramApiException e) {
-                    logger.error("Rasm yuborishda xato, chatId: {}", userChatId, e);
-                    sendReply(userChatId, "Rasm yuborishda xato yuz berdi: " + e.getMessage());
-                }
-            } else if (message.hasText()) {
-                String text = message.getText().toLowerCase();
-                switch (text) {
-                    case "/start":
-                    case "start":
-                        // Check if the most recent chat is closed
-                        if (chat.isClosed()) {
-                            // Reopen the existing chat
-                            chat.setClosed(false);
-                            chat.setUpdatedAt(LocalDateTime.now());
-                            chat = chatRepository.save(chat);
-                        }
-                        sendWelcomeMessage(userChatId);
-                        return;
-                    default:
-                        boolean shouldSend = shouldSendAutomatedResponseForChat(chat);
-
-                        // Save user message
-                        MessageEntity savedMessage = MessageEntity.builder()
-                                .chat(chat)
-                                .sender("USER")
-                                .message(text)
-                                .createdAt(LocalDateTime.now())
-                                .build();
-                        messageRepository.save(savedMessage);
-
-                        if (shouldSend) {
-                            sendReply(userChatId, "So'rovingiz qabul qilindi, tez orada javob beramiz.");
-                        }
-
-                        messagingTemplate.convertAndSend("/topic/chats", savedMessage);
-                }
+                execute(sendPhoto);
             }
+
+            String downloadUrl = getFileDownloadUrl(fileId);
+
+            String caption = message.getCaption();
+            String messageContent = caption != null ? caption : "📷 Rasm";
+
+            MessageEntity messageEntity = createMessage(chat, "USER", messageContent, downloadUrl);
+            updateChatLastMessage(chat, messageContent, messageEntity.getCreatedAt());
+
+            sendAutomatedResponse(chat, userChatId);
+            messagingTemplate.convertAndSend("/topic/chats", messageEntity);
+
+            log.info("✅ Rasm xabari qayta ishlandi, chat: {}", chat.getId());
+        } catch (TelegramApiException e) {
+            log.error("❌ Rasm yuborishda xato, chatId: {}", userChatId, e);
+            sendReply(userChatId, "⚠️ Rasm yuborishda xato yuz berdi: " + e.getMessage());
         }
     }
 
-    private boolean shouldSendAutomatedResponseForChat(ChatEntity chat) {
-        List<MessageEntity> allMessages = messageRepository.findAllByChat(chat);
+    private void handleTextMessage(Message message, ChatEntity chat, Long userChatId) {
+        String text = message.getText().trim().toLowerCase();
+        boolean isStartCommand = text.equals("/start") || text.equals("start");
 
-        if (allMessages.isEmpty()) {
-            return true;
+        // Xabarni saqlash
+        MessageEntity messageEntity = createMessage(chat, "USER", text, null);
+        updateChatLastMessage(chat, text, messageEntity.getCreatedAt());
+        messagingTemplate.convertAndSend("/topic/chats", messageEntity);
+
+        if (isStartCommand) {
+            handleStartCommand(chat, userChatId);
+        } else if (shouldSendAutomatedResponseForChat(chat)) {
+            sendAutomatedResponse(chat, userChatId);
         }
 
-        Optional<MessageEntity> lastAdminMessage = allMessages.stream()
-                .filter(msg -> "ADMIN".equals(msg.getSender()))
-                .max((m1, m2) -> m1.getCreatedAt().compareTo(m2.getCreatedAt()));
-
-        if (lastAdminMessage.isEmpty()) {
-            long userMessageCount = allMessages.stream()
-                    .filter(msg -> "USER".equals(msg.getSender()))
-                    .count();
-            return userMessageCount <= 1;
-        }
-
-        MessageEntity lastAdminMsg = lastAdminMessage.get();
-        LocalDateTime now = LocalDateTime.now();
-        long minutesSinceLastAdminMessage = ChronoUnit.MINUTES.between(lastAdminMsg.getCreatedAt(), now);
-
-        if (minutesSinceLastAdminMessage >= 45) {
-            boolean hasUserMessageAfterAdmin = allMessages.stream()
-                    .anyMatch(msg -> "USER".equals(msg.getSender()) &&
-                            msg.getCreatedAt().isAfter(lastAdminMsg.getCreatedAt()));
-            return !hasUserMessageAfterAdmin;
-        }
-
-        return false;
+        log.info("✅ Matn xabari qayta ishlandi, chat: {}", chat.getId());
     }
 
-    private void sendWelcomeMessage(Long chatId) {
+    private void handleStartCommand(ChatEntity chat, Long userChatId) {
         String welcomeMessage = """
-                O'zbekcha:
+                🌟 Xush kelibsiz! / Welcome! / Добро пожаловать!
+                
+                🇺🇿 O'zbekcha:
                 Assalomu alaykum! 👋
                 Siz Parapay qo'llab-quvvatlash xizmatiga murojaat qildingiz.
                 Savollaringiz bo'lsa, bemalol yozing!
-
-                Русский:
+                
+                🇷🇺 Русский:
                 Здравствуйте! 👋
                 Вы обратились в поддержку Parapay.
                 Напишите ваш вопрос, мы обязательно ответим!
                 
-                English:
+                🇺🇸 English:
                 Hello! 👋
                 You have contacted Parapay support.
                 If you have any questions, feel free to write!
                 """;
-        sendReply(chatId, welcomeMessage);
+
+        sendReply(userChatId, welcomeMessage);
+        MessageEntity welcomeEntity = createMessage(chat, "SYSTEM", welcomeMessage, null);
+        updateChatLastMessage(chat, "🎉 Suhbat boshlandi", welcomeEntity.getCreatedAt());
+        messagingTemplate.convertAndSend("/topic/chats", welcomeEntity);
+
+        log.info("🚀 /start buyrug'i qayta ishlandi, chat: {}", chat.getId());
+    }
+
+    private void sendAutomatedResponse(ChatEntity chat, Long userChatId) {
+        String responseText = """
+                ✅ So'rovingiz qabul qilindi!
+                📞 Tez orada operator javob beradi.
+                
+                ✅ Your request has been received!
+                📞 An operator will respond soon.
+                
+                ✅ Ваш запрос получен!
+                📞 Оператор ответит в ближайшее время.
+                """;
+
+        sendReply(userChatId, responseText);
+        MessageEntity responseEntity = createMessage(chat, "SYSTEM", responseText, null);
+        updateChatLastMessage(chat, responseText, responseEntity.getCreatedAt());
+        messagingTemplate.convertAndSend("/topic/chats", responseEntity);
+    }
+
+    private MessageEntity createMessage(ChatEntity chat, String sender, String message, String file) {
+        MessageEntity messageEntity = MessageEntity.builder()
+                .chat(chat)
+                .sender(sender)
+                .message(message)
+                .file(file)
+                .createdAt(LocalDateTime.now())
+                .isRead("SYSTEM".equals(sender))
+                .build();
+        return messageRepository.save(messageEntity);
+    }
+
+    private void updateChatLastMessage(ChatEntity chat, String message, LocalDateTime timestamp) {
+        String truncatedMessage = message != null && message.length() > 255
+                ? message.substring(0, 252) + "..."
+                : message;
+        chat.setLastMessage(truncatedMessage);
+        chat.setLastMessageDate(timestamp);
+        chat.setUpdatedAt(LocalDateTime.now());
+        chatRepository.save(chat);
+    }
+
+    private String getFileDownloadUrl(String fileId) throws TelegramApiException {
+        GetFile getFile = new GetFile();
+        getFile.setFileId(fileId);
+        File file = execute(getFile);
+        return "https://api.telegram.org/file/bot" + getBotToken() + "/" + file.getFilePath();
+    }
+
+    private boolean shouldSendAutomatedResponseForChat(ChatEntity chat) {
+        List<MessageEntity> messages = messageRepository.findAllByChat(chat);
+        if (messages.isEmpty()) {
+            return true;
+        }
+
+        Optional<MessageEntity> lastAdminMessage = messages.stream()
+                .filter(msg -> "ADMIN".equals(msg.getSender()))
+                .max((m1, m2) -> m1.getCreatedAt().compareTo(m2.getCreatedAt()));
+
+        if (lastAdminMessage.isEmpty()) {
+            return messages.stream().filter(msg -> "USER".equals(msg.getSender())).count() <= 1;
+        }
+
+        MessageEntity lastAdminMsg = lastAdminMessage.get();
+        long minutesSinceLastAdminMessage = ChronoUnit.MINUTES.between(lastAdminMsg.getCreatedAt(), LocalDateTime.now());
+        if (minutesSinceLastAdminMessage >= 45) {
+            return !messages.stream()
+                    .anyMatch(msg -> "USER".equals(msg.getSender()) &&
+                            msg.getCreatedAt().isAfter(lastAdminMsg.getCreatedAt()));
+        }
+        return false;
     }
 
     public void sendReply(Long chatId, String text) {
         SendMessage message = new SendMessage();
         message.setChatId(chatId.toString());
         message.setText(text);
+        message.setParseMode("HTML");
         executeSafe(message);
     }
 
     private void executeSafe(SendMessage msg) {
         try {
             execute(msg);
+            log.debug("✅ Xabar muvaffaqiyatli yuborildi, chat: {}", msg.getChatId());
         } catch (TelegramApiException e) {
-            logger.error("Xabar yuborishda xato, chatId: {}", msg.getChatId(), e);
+            log.error("❌ Xabar yuborishda xato, chatId: {}, xato: {}", msg.getChatId(), e.getMessage(), e);
         }
     }
 }

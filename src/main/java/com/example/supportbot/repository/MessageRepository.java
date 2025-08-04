@@ -8,7 +8,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
-
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -33,9 +32,12 @@ public interface MessageRepository extends JpaRepository<MessageEntity, UUID> {
     @Query("UPDATE MessageEntity m SET m.isRead = true WHERE m.chat = :chat AND m.sender = 'USER' AND m.isRead = false")
     int markAllUserMessagesAsRead(@Param("chat") ChatEntity chat);
 
+    List<MessageEntity> findByChatAndSenderAndIsRead(ChatEntity chat, String sender, boolean isRead);
+
     @Query("SELECT COUNT(m) FROM MessageEntity m WHERE m.chat = :chat AND m.isRead = false AND m.sender = 'USER'")
     long countUnreadMessages(@Param("chat") ChatEntity chat);
 
     @Query("SELECT m FROM MessageEntity m WHERE m.sender = 'USER' ORDER BY m.createdAt DESC")
     Page<MessageEntity> findRecentUserMessages(Pageable pageable);
+
 }
